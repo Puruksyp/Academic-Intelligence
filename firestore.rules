@@ -1,0 +1,86 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // User Profile Validation
+    function isValidUser(data) {
+      let keys = data.keys();
+      return keys.hasAll(['email', 'updatedAt'])
+             && keys.size() <= 5
+             && data.email is string && data.email.size() <= 256
+             && (data.get('displayName', null) == null || (data.displayName is string && data.displayName.size() <= 128))
+             && (data.get('photoURL', null) == null || (data.photoURL is string && data.photoURL.size() <= 1024))
+             && data.updatedAt == request.time;
+    }
+
+    // User Profile Rules
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidId(userId)
+                    && isValidUser(incoming())
+                    && incoming().keys().hasAll(['createdAt'])
+                    && incoming().createdAt == request.time;
+      allow update: if isOwner(userId)
+                    && isValidUser(incoming())
+                    && incoming().createdAt == existing().createdAt
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoURL', 'updatedAt', 'createdAt']);
+      allow delete: if isOwner(userId);
+    }
+
+    // Analysis Result Rules
+    match /users/{userId}/analyses/{analysisId} {
+      function isValidAnalysis(data) {
+        let keys = data.keys();
+        return keys.hasAll(['subject', 'summary', 'userId', 'updatedAt', 'status', 'topicsJson', 'totalQuestions'])
+               && keys.size() <= 9
+               && data.subject is string && data.subject.size() <= 200
+               && data.summary is string && data.summary.size() <= 5000
+               && data.topicsJson is string && data.topicsJson.size() <= 50000
+               && data.userId == userId
+               && data.status == 'completed'
+               && data.totalQuestions is int
+               && (data.get('year', null) == null || (data.year is string && data.year.size() <= 50))
+               && data.updatedAt == request.time;
+      }
+
+      allow list: if isOwner(userId);
+      allow get: if isOwner(userId) && isValidId(analysisId);
+      allow create: if isOwner(userId) && isValidId(analysisId) 
+                    && exists(/databases/$(database)/documents/users/$(userId))
+                    && isValidAnalysis(incoming())
+                    && incoming().keys().hasAll(['createdAt'])
+                    && incoming().createdAt == request.time;
+      allow update: if isOwner(userId) && isValidId(analysisId)
+                    && isValidAnalysis(incoming())
+                    && incoming().createdAt == existing().createdAt
+                    && incoming().diff(existing()).affectedKeys().hasOnly(['subject', 'summary', 'topicsJson', 'totalQuestions', 'year', 'status', 'updatedAt']);
+      allow delete: if isOwner(userId);
+    }
+  }
+}
